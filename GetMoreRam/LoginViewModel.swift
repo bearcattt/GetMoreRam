@@ -29,7 +29,7 @@ class LoginViewModel: ObservableObject {
 
     func submitVerificationCode() {
         guard !isVerificationCodeSubmitting,
-              let verificationCodeContinuation else { return }
+              let continuation = verificationCodeContinuation else { return }
 
         self.verificationCodeContinuation = nil
         isVerificationCodeSubmitting = true
@@ -40,8 +40,11 @@ class LoginViewModel: ObservableObject {
         pendingVerificationInner = nil
 
         Task {
+            // The continuation MUST be resumed exactly once — this is captured
+            // *before* the stored property is nilled (nil-after-write caused a
+            // force-unwrap crash every time a 2FA code was submitted).
             await inner?(cancelled || code.isEmpty ? nil : code)
-            verificationCodeContinuation.resume(returning: cancelled || code.isEmpty ? nil : code)
+            continuation.resume(returning: cancelled || code.isEmpty ? nil : code)
         }
     }
 
