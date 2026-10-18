@@ -21,17 +21,28 @@ class LoginViewModel: ObservableObject {
     @Published private(set) var isVerificationCodeSubmitting = false
     @Published var logs = ""
     @Published var availableTeams: [Team] = []
-    
-    private var verificationCodeHandler: ((String?) -> Void)?
+
+    /// Async handler handed to us by StosSign while it waits for a 2FA code.
+    private var pendingVerificationInner: ((String?) async -> Void)?
+    private var verificationCodeContinuation: CheckedContinuation<String?, Never>?
     private var isAuthenticationCancellationRequested = false
-    
+
     func submitVerificationCode() {
         guard !isVerificationCodeSubmitting,
-              let verificationCodeHandler else { return }
+              let verificationCodeContinuation else { return }
 
-        self.verificationCodeHandler = nil
+        self.verificationCodeContinuation = nil
         isVerificationCodeSubmitting = true
-        verificationCodeHandler(verificationCode)
+
+        let code = verificationCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cancelled = isAuthenticationCancellationRequested
+        let inner = pendingVerificationInner
+        pendingVerificationInner = nil
+
+        Task {
+            await inner?(cancelled || code.isEmpty ? nil : code)
+            verificationCodeContinuation.resume(returning: cancelled || code.isEmpty ? nil : code)
+        }
     }
 
     func cancelAuthentication() {
@@ -39,34 +50,38 @@ class LoginViewModel: ObservableObject {
 
         isAuthenticationCancellationRequested = true
 
-        let verificationCodeHandler = verificationCodeHandler
-        self.verificationCodeHandler = nil
         needVerificationCode = false
         verificationCode = ""
         isVerificationCodeSubmitting = false
 
-        verificationCodeHandler?(nil)
+        // If we're currently waiting for a 2FA code, wake the task up with nil.
+        if let verificationCodeContinuation {
+            self.verificationCodeContinuation = nil
+            self.pendingVerificationInner = nil
+            verificationCodeContinuation.resume(returning: nil)
+        }
     }
-    
+
     func authenticate() async throws -> Bool {
         if isLoginInProgress {
             return false
         }
-        
+
         logs = ""
         isLoginInProgress = true
         isAuthenticationCancellationRequested = false
-        
+
         func logging(text: String) {
             Task { @MainActor [weak self] in
                 self?.logs.append("\(text)\n")
             }
         }
-        
+
         AnisetteDataHelper.shared.loggingFunc = logging
 
         defer {
-            verificationCodeHandler = nil
+            pendingVerificationInner = nil
+            verificationCodeContinuation = nil
             appleID = ""
             password = ""
             needVerificationCode = false
@@ -79,13 +94,18 @@ class LoginViewModel: ObservableObject {
         do {
             let anisetteData = try await AnisetteDataHelper.shared.getAnisetteData()
 
-            let (account, session) = try await AppleAPI.shared.authenticate(appleID: appleID, password: password, anisetteData: anisetteData) { [weak self] completionHandler in
+            let (account, session) = try await AppleAPI.shared.authenticate(
+                appleID: appleID,
+                password: password,
+                anisetteData: anisetteData
+            ) { inner in
                 guard let self else {
-                    completionHandler(nil)
+                    await inner(nil)
                     return
                 }
 
-                self.prepareForVerification(using: completionHandler)
+                let code = await self.requestVerificationCode(with: inner)
+                await inner(code)
             }
 
             guard !isAuthenticationCancellationRequested else {
@@ -113,26 +133,32 @@ class LoginViewModel: ObservableObject {
         }
     }
 
-    private func prepareForVerification(using handler: @escaping (String?) -> Void) {
-        guard !isAuthenticationCancellationRequested else {
-            handler(nil)
-            return
-        }
+    /// Stores StosSign's code-receiver, shows the 2FA entry sheet and
+    /// suspends until the user types a code (or cancels).
+    private func requestVerificationCode(with inner: @escaping (String?) async -> Void) async -> String? {
+        self.pendingVerificationInner = inner
 
-        verificationCodeHandler = handler
-        verificationCode = ""
-        needVerificationCode = true
-        isVerificationCodeSubmitting = false
+        return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            guard !isAuthenticationCancellationRequested else {
+                continuation.resume(returning: nil)
+                return
+            }
+
+            self.verificationCodeContinuation = continuation
+            self.verificationCode = ""
+            self.needVerificationCode = true
+            self.isVerificationCodeSubmitting = false
+        }
     }
-    
-    func fetchTeams(for account: Account, session: AppleAPISession) async throws -> [Team]
+
+    private func fetchTeams(for account: Account, session: AppleAPISession) async throws -> [Team]
     {
 
         let fetchedTeams = try await AppleAPI.shared.fetchTeamsForAccount(account: account, session: session)
         guard !fetchedTeams.isEmpty else {
             throw "Unable to Fetch Team!"
         }
-        
+
         return fetchedTeams
     }
 }
