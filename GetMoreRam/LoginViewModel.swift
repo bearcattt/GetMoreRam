@@ -98,7 +98,7 @@ class LoginViewModel: ObservableObject {
                 appleID: appleID,
                 password: password,
                 anisetteData: anisetteData
-            ) { inner in
+            ) { [weak self] inner in
                 guard let self else {
                     await inner(nil)
                     return
