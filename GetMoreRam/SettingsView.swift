@@ -59,6 +59,9 @@ struct SettingsView: View {
                     Spacer()
                     TextField("", text: $sharedModel.anisetteServerURL)
                         .multilineTextAlignment(.trailing)
+                        .onSubmit {
+                            sharedModel.setAnisetteServer(sharedModel.anisetteServerURL)
+                        }
                 }
             }
             

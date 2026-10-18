@@ -84,13 +84,26 @@ extension String: @retroactive LocalizedError {
 
 class SharedModel: ObservableObject {
     @Published var isLogin = false
-    @AppStorage("AnisetteServer") var anisetteServerURL = "https://ani.jkcoxson.com"
+    @AppStorage("AnisetteServer") var anisetteServerURL = "https://win.ani.sidestore.io"
     var session: AppleAPISession?
     var account: Account?
     var team: Team?
     
     init() {
         AnisetteDataHelper.shared.url = URL(string: anisetteServerURL)
+    }
+
+    func setAnisetteServer(_ urlString: String) {
+        guard URL(string: urlString) != AnisetteDataHelper.shared.url else { return }
+        anisetteServerURL = urlString
+        AnisetteDataHelper.shared.url = URL(string: urlString)
+        // Cached provisioning (identifier/adi.pb, client info) is tied to the
+        // previous server — wipe it so the next run provisions against the
+        // new server's identity.
+        Keychain.shared.adiPb = nil
+        Keychain.shared.identifier = nil
+        UserDefaults.standard.removeObject(forKey: "anisetteProvisioningClientInfo")
+        AnisetteDataHelper.shared.resetClientInfo()
     }
 }
 

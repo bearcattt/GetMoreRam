@@ -78,8 +78,14 @@ class LoginViewModel: ObservableObject {
         }
 
         AnisetteDataHelper.shared.loggingFunc = logging
+        GsAuth.logHandler = { text in
+            Task { @MainActor [weak self] in
+                self?.logs.append("\(text)\n")
+            }
+        }
 
         defer {
+            GsAuth.logHandler = nil
             pendingVerificationInner = nil
             verificationCodeContinuation = nil
             appleID = ""
@@ -92,9 +98,40 @@ class LoginViewModel: ObservableObject {
         }
 
         do {
+            // Old defaults point at servers that block URLSession clients or
+            // report a stale Mac identity — migrate them to the one that
+            // Apple accepts (SideStore's official Windows-ADI server).
+            let workingServer = "https://win.ani.sidestore.io"
+            let currentServer = UserDefaults.standard.string(forKey: "AnisetteServer")
+            if currentServer == nil
+                || [
+                    "https://ani.jkcoxson.com",
+                    "https://ani.sidestore.zip",
+                    "https://ani.sidestore.io",
+                    "https://ani2.stikstore.app",
+                    "https://ani.sidestore.app"
+                ].contains(currentServer) {
+                UserDefaults.standard.set(workingServer, forKey: "AnisetteServer")
+            }
+            let anisetteURLString = UserDefaults.standard.string(forKey: "AnisetteServer") ?? workingServer
+            logging(text: "Anisette server URL: \(anisetteURLString)")
+            AnisetteDataHelper.shared.url = URL(string: anisetteURLString)
+            logging(text: "Provisioning anisette (V3)…")
             let anisetteData = try await AnisetteDataHelper.shared.getAnisetteData()
+            logging(text: "Anisette OK — machineID=\(anisetteData.machineID.prefix(8))… otp=\(anisetteData.oneTimePassword.isEmpty ? "EMPTY" : "ok")")
+            logging(text: "Anisette client info: \(anisetteData.deviceDescription)")
 
-            let (account, session) = try await AppleAPI.shared.authenticate(
+            // GrandSlam identity must match the client that generated the
+            // anisette data (AltSign PR #61). Wire the providers up.
+            GsAuth.anisetteDataRefreshHandler = {
+                try await AnisetteDataHelper.shared.getAnisetteData()
+            }
+            GsAuth.anisetteDataResyncHandler = { sim in
+                try await AnisetteDataHelper.shared.resyncAnisetteData(sim: sim)
+            }
+
+            logging(text: "Authenticating with Apple (grandslam)…")
+            let (account, session) = try await GsAuth.authenticate(
                 appleID: appleID,
                 password: password,
                 anisetteData: anisetteData
@@ -128,6 +165,7 @@ class LoginViewModel: ObservableObject {
             if isAuthenticationCancellationRequested {
                 throw CancellationError()
             }
+            logging(text: "Login failed: \(error.localizedDescription)")
             print(error)
             throw error
         }
