@@ -40,10 +40,10 @@ class LoginViewModel: ObservableObject {
         pendingVerificationInner = nil
 
         Task {
-            // The continuation MUST be resumed exactly once — this is captured
-            // *before* the stored property is nilled (nil-after-write caused a
-            // force-unwrap crash every time a 2FA code was submitted).
-            await inner?(cancelled || code.isEmpty ? nil : code)
+            // Resume ONLY the UI continuation here; its caller (the login
+            // bridge) then resumes GsAuth's own continuation exactly once.
+            // Resuming `inner` here too made GSA's checked continuation be
+            // resumed twice -> crash every time a 2FA code was submitted.
             continuation.resume(returning: cancelled || code.isEmpty ? nil : code)
         }
     }
@@ -144,6 +144,9 @@ class LoginViewModel: ObservableObject {
                     return
                 }
 
+                // requestVerificationCode's continuation is resumed by the
+                // 2FA sheet; this is the single place where GsAuth's
+                // continuation gets the code.
                 let code = await self.requestVerificationCode(with: inner)
                 await inner(code)
             }
